@@ -13,6 +13,8 @@
 <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTkyIj4KPHJlY3Qgd2lkdGg9IjE5MiIgaGVpZ2h0PSIxOTIiIHJ4PSIzNiIgZmlsbD0iIzFDMUYxRCIvPgo8cmVjdCB4PSIxNCIgeT0iMTQiIHdpZHRoPSIxNjQiIGhlaWdodD0iMTY0IiByeD0iMjYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0YyQjcwNSIgc3Ryb2tlLXdpZHRoPSI0Ii8+Cjx0ZXh0IHg9Ijk2IiB5PSI4OCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iODAwIiBmb250LXNpemU9IjU4IiBmaWxsPSIjRjJCNzA1IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QVjwvdGV4dD4KPHRleHQgeD0iOTYiIHk9IjEyOCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iNzAwIiBmb250LXNpemU9IjIwIiBmaWxsPSIjRjVGMUU4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5BQ0k8L3RleHQ+Cjwvc3ZnPg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --asphalt: #1C1F1D;
@@ -307,58 +309,75 @@
 <script>
 /* =====================================================================
    PharmaVan — Advanced Chemical Industries PLC.
-   Client-side prototype. Data persists in this browser via localStorage.
-   No backend — see notes at bottom about real multi-company blind bidding.
+   Data now syncs across every phone in real time via Firebase Firestore.
+   ⚠️ SETUP REQUIRED: paste your own Firebase project config below.
+   দেখুন সঙ্গের "firebase-setup-guide.md" ফাইলে ধাপে ধাপে নির্দেশনা।
+
+   Honesty note: this is a simple shared-database prototype, not a secure
+   multi-tenant backend. The target rate and other vendors' bid amounts
+   are hidden in the app's screens, but are not cryptographically
+   restricted at the data level — a technically skilled person could
+   still inspect raw network traffic. True per-role data security needs
+   a real backend with server-side access rules.
 ===================================================================== */
 
-const LS_TRIPS = 'pharmavan_trips_v1';
-const LS_VENDOR_NAME = 'pharmavan_vendor_name_v1';
+const firebaseConfig = {
+  apiKey: "AIzaSyDR-nNDnAgdWkM3OWWaUrh_jumuR74lOoQ",
+  authDomain: "pharmavanapp.firebaseapp.com",
+  projectId: "pharmavanapp",
+  storageBucket: "pharmavanapp.firebasestorage.app",
+  messagingSenderId: "706352732907",
+  appId: "1:706352732907:web:1dcae2052dcbd41c4d3cae"
+};
 
+const LS_VENDOR_NAME = 'pharmavan_vendor_name_v1';
 let role = 'shipper';
 let tab = 'home';
+let trips = [];
+let db = null;
+let tripsCol = null;
 
 const VEHICLES = ['পিকআপ','কাভার্ড ভ্যান','ছোট ট্রাক','মাঝারি ট্রাক','বড় ট্রাক (কাভার্ড)'];
 
-/* ---------------- Load / Save ---------------- */
-function loadTrips(){
-  try{
-    const raw = localStorage.getItem(LS_TRIPS);
-    return raw ? JSON.parse(raw) : [];
-  }catch(e){ return []; }
-}
-function saveTrips(){
-  try{ localStorage.setItem(LS_TRIPS, JSON.stringify(trips)); }catch(e){}
-}
+/* ---------------- Vendor identity (kept local to each phone) ---------------- */
 function getSavedVendorName(){
   try{ return localStorage.getItem(LS_VENDOR_NAME) || ''; }catch(e){ return ''; }
 }
 function saveVendorName(name){
   try{ localStorage.setItem(LS_VENDOR_NAME, name); }catch(e){}
 }
+function genId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 
-let trips = loadTrips();
-let nextId = 1;
-(function computeNextId(){
-  trips.forEach(t=>{
-    if(t.id >= nextId) nextId = t.id+1;
-    (t.bids||[]).forEach(b=>{ if(b.id >= nextId) nextId = b.id+1; });
+/* ---------------- Firebase init ---------------- */
+function firebaseConfigured(){
+  return firebaseConfig.apiKey && firebaseConfig.apiKey.indexOf('PASTE_') !== 0;
+}
+if(firebaseConfigured()){
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+  tripsCol = db.collection('trips');
+  tripsCol.onSnapshot(snapshot=>{
+    trips = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    archiveStaleTrips();
+    render();
+  }, err=>{
+    console.error(err);
+    document.getElementById('screen').innerHTML = emptyState('⚠️','সিঙ্ক করতে সমস্যা হচ্ছে','ইন্টারনেট সংযোগ চেক করুন, অথবা Firebase কনফিগ ঠিক আছে কিনা দেখুন।');
   });
-})();
+} else {
+  document.getElementById('screen').innerHTML = emptyState('🔧','Firebase কনফিগার করা হয়নি','এই অ্যাপ একাধিক মোবাইলে ডাটা সিঙ্ক করার জন্য Firebase ব্যবহার করে। সঙ্গের "firebase-setup-guide.md" ফাইল অনুসরণ করে কনফিগ বসান।');
+}
 
 /* ---------------- Daily rollover: archive yesterday's data into history ---------------- */
 function todayKey(){ return new Date().toDateString(); }
 function archiveStaleTrips(){
-  let changed = false;
+  if(!tripsCol) return;
   trips.forEach(t=>{
     if(!t.archived && t.createdAt && new Date(t.createdAt).toDateString() !== todayKey()){
-      t.archived = true;
-      if(t.status === 'open') t.status = 'expired';
-      changed = true;
+      tripsCol.doc(t.id).update({ archived:true, status: t.status==='open' ? 'expired' : t.status }).catch(()=>{});
     }
   });
-  if(changed) saveTrips();
 }
-archiveStaleTrips();
 
 /* ---------------- Helpers ---------------- */
 function fmt(n){ return Number(n).toLocaleString('en-IN'); }
@@ -415,6 +434,10 @@ function iTag(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
 function render(){
   renderNav();
   const screen = document.getElementById('screen');
+  if(!firebaseConfigured()){
+    screen.innerHTML = emptyState('🔧','Firebase কনফিগার করা হয়নি','এই অ্যাপ একাধিক মোবাইলে ডাটা সিঙ্ক করার জন্য Firebase ব্যবহার করে। সঙ্গের "firebase-setup-guide.md" ফাইল অনুসরণ করে কনফিগ বসান।');
+    return;
+  }
   if(role==='shipper'){
     if(tab==='home') screen.innerHTML = renderShipperHome();
     if(tab==='post') screen.innerHTML = renderPostForm();
@@ -462,8 +485,8 @@ function tripCard(t){
     <div class="card-foot">
       <div class="bid-count">${bidCount>0 ? `<b>${bidCount}</b> টি বিড এসেছে` : 'এখনো কোনো বিড নেই'}</div>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-outline" onclick="openAddEntryForm(${t.id})">+ ভাড়া এন্ট্রি</button>
-        <button class="btn btn-primary" onclick="openTripBids(${t.id})">বিড দেখুন</button>
+        <button class="btn btn-outline" onclick="openAddEntryForm('${t.id}')">+ ভাড়া এন্ট্রি</button>
+        <button class="btn btn-primary" onclick="openTripBids('${t.id}')">বিড দেখুন</button>
       </div>
     </div>
   </div>`;
@@ -516,15 +539,15 @@ function submitTrip(){
     toast('সব ঘর পূরণ করুন (নির্ধারিত ভাড়া ছাড়া)');
     return;
   }
-  trips.unshift({
-    id: nextId++, pickup, drop, product, qty, vehicle, tonnage, date, time,
+  tripsCol.add({
+    pickup, drop, product, qty, vehicle, tonnage, date, time,
     targetRate: target ? parseInt(target) : null,
     status:'open', archived:false, createdAt: new Date().toISOString(), bids: []
-  });
-  saveTrips();
-  toast('ট্রিপ পোস্ট হয়েছে ✓');
-  tab = 'home';
-  render();
+  }).then(()=>{
+    toast('ট্রিপ পোস্ট হয়েছে ✓');
+    tab = 'home';
+    render();
+  }).catch(()=> toast('সমস্যা হয়েছে, আবার চেষ্টা করুন'));
 }
 
 function openTripBids(tripId){
@@ -561,7 +584,7 @@ function openTripBids(tripId){
         ${isAccepted
           ? `<span class="status-pill s-accepted" style="width:100%;text-align:center;padding:9px;">✓ গৃহীত বিড</span>`
           : (t.status==='open'
-              ? `<button class="btn btn-dark btn-block" onclick="acceptBid(${t.id}, ${b.id})">এই বিড গ্রহণ করুন</button>`
+              ? `<button class="btn btn-dark btn-block" onclick="acceptBid('${t.id}', '${b.id}')">এই বিড গ্রহণ করুন</button>`
               : `<span class="status-pill s-done" style="width:100%;text-align:center;padding:9px;">বন্ধ হয়েছে</span>`)
         }
       </div>
@@ -574,7 +597,7 @@ function openTripBids(tripId){
     <div style="font-size:12.5px;color:#6b6b66;margin-bottom:10px;">
       ${t.targetRate ? `আপনার নির্ধারিত ভাড়া: <b style="color:var(--asphalt);">৳${fmt(t.targetRate)}</b> <span style="color:#a3a39a;">(শুধু আপনি দেখছেন)</span>` : 'কোনো নির্ধারিত ভাড়া সেট করা হয়নি'}
     </div>
-    <button class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="openAddEntryForm(${t.id})">+ ভেন্ডরের নাম ও ভাড়া এন্ট্রি করুন</button>
+    <button class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="openAddEntryForm('${t.id}')">+ ভেন্ডরের নাম ও ভাড়া এন্ট্রি করুন</button>
     ${bidsHtml}
   `);
 }
@@ -591,7 +614,7 @@ function openAddEntryForm(tripId){
       <div class="field"><label>টন <span class="opt">— ঐচ্ছিক</span></label><input id="e_tonnage" type="number" step="0.1" placeholder="৩"></div>
     </div>
     <div class="field"><label>পৌঁছানোর সময় <span class="opt">— ঐচ্ছিক</span></label><input id="e_eta" type="text" placeholder="যেমন: ৪ ঘণ্টা"></div>
-    <button class="btn btn-primary btn-block" onclick="submitManualEntry(${tripId})">এন্ট্রি যোগ করুন</button>
+    <button class="btn btn-primary btn-block" onclick="submitManualEntry('${tripId}')">এন্ট্রি যোগ করুন</button>
   `);
 }
 function submitManualEntry(tripId){
@@ -601,21 +624,15 @@ function submitManualEntry(tripId){
   const tonnage = document.getElementById('e_tonnage').value.trim();
   const eta = document.getElementById('e_eta').value.trim();
   if(!vendorName || !rate){ toast('ভেন্ডরের নাম ও ভাড়া দিন'); return; }
-  const t = trips.find(x=>x.id===tripId);
-  t.bids = t.bids || [];
-  t.bids.push({ id: nextId++, vendorName, rate, vehicleInfo, tonnage, eta, manualEntry:true });
-  saveTrips();
-  toast('এন্ট্রি যোগ হয়েছে ✓');
-  openTripBids(tripId);
+  const newBid = { id: genId(), vendorName, rate, vehicleInfo, tonnage, eta, manualEntry:true };
+  tripsCol.doc(tripId).update({ bids: firebase.firestore.FieldValue.arrayUnion(newBid) })
+    .then(()=>{ toast('এন্ট্রি যোগ হয়েছে ✓'); openTripBids(tripId); })
+    .catch(()=> toast('সমস্যা হয়েছে, আবার চেষ্টা করুন'));
 }
 function acceptBid(tripId, bidId){
-  const t = trips.find(x=>x.id===tripId);
-  t.status = 'accepted';
-  t.acceptedBidId = bidId;
-  saveTrips();
-  closeModal();
-  toast('বিড গৃহীত হয়েছে ✓');
-  render();
+  tripsCol.doc(tripId).update({ status:'accepted', acceptedBidId: bidId })
+    .then(()=>{ closeModal(); toast('বিড গৃহীত হয়েছে ✓'); })
+    .catch(()=> toast('সমস্যা হয়েছে, আবার চেষ্টা করুন'));
 }
 
 function renderShipperHistory(){
@@ -643,7 +660,7 @@ function renderShipperHistory(){
         <div class="bid-count">${(t.bids||[]).length} টি বিড এসেছিল</div>
         ${rated
           ? `<span class="status-pill s-done">আপনি রেটিং দিয়েছেন ${'★'.repeat(t.myRatingGiven)}</span>`
-          : `<button class="btn btn-outline" onclick="openRateModal(${t.id})">ভেন্ডর রেট করুন</button>`}
+          : `<button class="btn btn-outline" onclick="openRateModal('${t.id}')">ভেন্ডর রেট করুন</button>`}
       </div>` : `<div class="card-foot"><div class="bid-count">কোনো বিড গৃহীত হয়নি</div></div>`}
     </div>`;
   }).join('');
@@ -658,7 +675,7 @@ function openRateModal(tripId){
     <div class="rating-pick" id="ratePick">
       ${[1,2,3,4,5].map(n=>`<span data-n="${n}" onclick="pickStar(${n})">★</span>`).join('')}
     </div>
-    <button class="btn btn-primary btn-block" onclick="submitRating(${tripId})">রেটিং জমা দিন</button>
+    <button class="btn btn-primary btn-block" onclick="submitRating('${tripId}')">রেটিং জমা দিন</button>
   `);
   window._pickedStar = 5;
   pickStar(5);
@@ -668,24 +685,26 @@ function pickStar(n){
   document.querySelectorAll('#ratePick span').forEach(s=>{ s.classList.toggle('on', parseInt(s.dataset.n) <= n); });
 }
 function submitRating(tripId){
-  const t = trips.find(x=>x.id===tripId);
-  t.myRatingGiven = window._pickedStar || 5;
-  saveTrips();
-  closeModal();
-  toast('রেটিং জমা হয়েছে ✓');
-  render();
+  tripsCol.doc(tripId).update({ myRatingGiven: window._pickedStar || 5 })
+    .then(()=>{ closeModal(); toast('রেটিং জমা হয়েছে ✓'); })
+    .catch(()=> toast('সমস্যা হয়েছে, আবার চেষ্টা করুন'));
 }
 
 /* =====================================================================
    TRANSPORTER / VENDOR
    Note: a vendor never sees another vendor's bid amount, and never sees
    the shipper's target rate — those fields simply aren't rendered here.
+   "My bids" are identified by matching this phone's saved vendor name.
 ===================================================================== */
+function isMyBid(b){
+  const mine = getSavedVendorName().trim().toLowerCase();
+  return mine && b.vendorName && b.vendorName.trim().toLowerCase() === mine;
+}
 function renderTransporterHome(){
   const open = trips.filter(t=>!t.archived && t.status==='open');
   if(open.length===0) return emptyState('🚚','এই মুহূর্তে কোনো খোলা ট্রিপ নেই','নতুন ট্রিপ পোস্ট হলে এখানে দেখা যাবে।');
   return `<div class="section-label">খোলা ট্রিপ (আজকের)</div>` + open.map(t=>{
-    const already = (t.bids||[]).some(b=>b.placedByMe);
+    const already = (t.bids||[]).some(isMyBid);
     return `
     <div class="card">
       <div style="font-size:12px;color:#6b6b66;font-weight:600;margin-bottom:8px;">${t.date} · ${t.time}</div>
@@ -702,7 +721,7 @@ function renderTransporterHome(){
         <div class="bid-count">প্রতিযোগী বিডের সংখ্যা ও পরিমাণ গোপন থাকে</div>
         ${already
           ? `<span class="status-pill s-pending">বিড দেওয়া হয়েছে</span>`
-          : `<button class="btn btn-primary" onclick="openBidForm(${t.id})">বিড দিন</button>`}
+          : `<button class="btn btn-primary" onclick="openBidForm('${t.id}')">বিড দিন</button>`}
       </div>
     </div>`;
   }).join('');
@@ -722,7 +741,7 @@ function openBidForm(tripId){
     <div class="field"><label>গাড়ির তথ্য (নম্বরসহ)</label><input id="b_vehicle" type="text" placeholder="${t.vehicle} — ঢাকা মেট্রো-..."></div>
     <div class="field"><label>পৌঁছানোর আনুমানিক সময়</label><input id="b_eta" type="text" placeholder="যেমন: ৩ ঘণ্টা ৩০ মিনিট"></div>
     <div class="field-hint" style="margin-bottom:12px;">আপনার বিডের পরিমাণ অন্য কোনো ভেন্ডর দেখতে পাবে না — শুধু শিপার দেখবে।</div>
-    <button class="btn btn-primary btn-block" onclick="submitBid(${tripId})">বিড জমা দিন</button>
+    <button class="btn btn-primary btn-block" onclick="submitBid('${tripId}')">বিড জমা দিন</button>
   `);
 }
 function submitBid(tripId){
@@ -732,21 +751,21 @@ function submitBid(tripId){
   const vehicleInfo = document.getElementById('b_vehicle').value.trim();
   const eta = document.getElementById('b_eta').value.trim();
   if(!vendorName || !rate || !tonnage || !vehicleInfo || !eta){ toast('সব ঘর পূরণ করুন'); return; }
-  const t = trips.find(x=>x.id===tripId);
-  t.bids = t.bids || [];
-  t.bids.push({ id: nextId++, vendorName, rate, tonnage, vehicleInfo, eta, rating:4.5, placedByMe:true });
-  saveVendorName(vendorName);
-  saveTrips();
-  closeModal();
-  toast('বিড জমা হয়েছে ✓');
-  render();
+  const newBid = { id: genId(), vendorName, rate, tonnage, vehicleInfo, eta, rating:4.5 };
+  tripsCol.doc(tripId).update({ bids: firebase.firestore.FieldValue.arrayUnion(newBid) })
+    .then(()=>{
+      saveVendorName(vendorName);
+      closeModal();
+      toast('বিড জমা হয়েছে ✓');
+    })
+    .catch(()=> toast('সমস্যা হয়েছে, আবার চেষ্টা করুন'));
 }
 
 function renderMyBids(){
-  const mine = trips.filter(t=>!t.archived && (t.bids||[]).some(b=>b.placedByMe));
+  const mine = trips.filter(t=>!t.archived && (t.bids||[]).some(isMyBid));
   if(mine.length===0) return emptyState('🏷️','আপনি এখনো কোনো বিড দেননি','"খোলা ট্রিপ" ট্যাব থেকে ট্রিপ বেছে বিড দিন।');
   return `<div class="section-label">আমার বিডসমূহ (আজকের)</div>` + mine.map(t=>{
-    const myBid = (t.bids||[]).find(b=>b.placedByMe);
+    const myBid = (t.bids||[]).find(isMyBid);
     let pill;
     if(t.status==='accepted' || t.status==='done'){
       pill = t.acceptedBidId===myBid.id ? `<span class="status-pill s-accepted">গৃহীত হয়েছে ✓</span>` : `<span class="status-pill s-done">গৃহীত হয়নি</span>`;
@@ -766,10 +785,10 @@ function renderMyBids(){
 }
 
 function renderTransporterHistory(){
-  const done = trips.filter(t=>(t.archived || t.status==='done') && (t.bids||[]).some(b=>b.placedByMe));
+  const done = trips.filter(t=>(t.archived || t.status==='done') && (t.bids||[]).some(isMyBid));
   if(done.length===0) return emptyState('🗂️','হিস্ট্রি খালি','সম্পন্ন বা মেয়াদোত্তীর্ণ ট্রিপ এখানে জমা হবে।');
   return `<div class="section-label">হিস্ট্রি</div>` + done.map(t=>{
-    const myBid = (t.bids||[]).find(b=>b.placedByMe);
+    const myBid = (t.bids||[]).find(isMyBid);
     const won = t.acceptedBidId === myBid.id;
     return `
     <div class="card">
